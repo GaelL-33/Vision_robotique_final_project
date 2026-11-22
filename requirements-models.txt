@@ -1,0 +1,6 @@
+# Installer d'abord PyTorch et torchvision ensemble sur le backend cible.
+open-clip-torch==3.3.0
+timm==1.0.15
+opencv-python-headless==4.11.0.86
+git+https://github.com/ChaoningZhang/MobileSAM.git
+

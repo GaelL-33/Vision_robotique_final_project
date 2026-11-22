@@ -1,0 +1,9 @@
+/.venv/
+/data/
+/weights/
+/cache/
+/runs/
+__pycache__/
+*.py[cod]
+
+/.venv-cuda/
