@@ -15,24 +15,20 @@ py -3.13 -m venv .venv
 
 L'environnement préparé sur ce poste réutilise NumPy et Pillow déjà installés via `--system-site-packages`, car le téléchargement de paquets était indisponible. Les deux commandes de géométrie utilisent ce même exécutable. La scène synthétique crée des images PNG 16 bits, deux positions de caméra et deux régions colorées à 2 m. Les points 3D correspondants doivent coïncider. Les fichiers synthétiques et le PLY se trouvent dans `runs/smoke/`.
 
-## Préparer les modèles et la mesure GPU
+## Installer et vérifier les modèles
 
-Sur la machine d'inférence raccordée au réseau, créer un environnement dédié CUDA. Sur Windows, les versions ci-dessous forment la paire officielle de PyTorch pour CUDA 12.8. Sur une autre plateforme, utiliser la paire officielle adaptée. Utiliser un seul backend par comparaison.
+Depuis la racine du dépôt, avec Python 3.12 ou 3.13, Git et un accès réseau pour la première installation. Si ta commande Python s'appelle `python3`, utilise-la dans les exemples. Choisis le même backend pour les deux cartes du benchmark.
 
-```powershell
-py -3.13 -m venv .venv-cuda
-$projectPython = ".\.venv-cuda\Scripts\python.exe"
-& $projectPython -m pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
-& $projectPython -m pip install -r requirements.txt -r requirements-models.txt -r requirements-analysis.txt
-& $projectPython -m pip check
-& $projectPython -c "import torch, torchvision, open_clip, mobile_sam; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); print(torch.ones(4, device='cuda')); print(torchvision.extension._has_ops())"
-New-Item -ItemType Directory -Path weights -Force | Out-Null
-curl.exe -fL --output weights/mobile_sam.pt https://raw.githubusercontent.com/ChaoningZhang/MobileSAM/master/weights/mobile_sam.pt
+```bash
+python -m openmap.setup_models --backend cuda
+python -m openmap.setup_models --backend cuda --check-only
 ```
 
-Au premier chargement, OpenCLIP récupère le checkpoint `laion2b_s34b_b79k` pour `ViT-B-32`. Configurer `HF_HOME` vers `cache/huggingface` avant ce chargement si vous voulez déplacer le cache avec le projet. Garder un SHA du commit installé pour MobileSAM et consigner les hashes des poids avant le benchmark. La configuration de départ des deux cartes est dans `configs/pilot.json`. Les trois bibliothèques d'analyse servent aux composantes, aux graphiques et au suivi du RSS. La visualisation interactive et ses dépendances peuvent attendre les premières mesures.
+CUDA nécessite un pilote NVIDIA fonctionnel et une distribution de PyTorch compatible avec la plateforme. Utilise `--backend cpu` pour une installation CPU. Le script crée ou réutilise `.venv-cuda/` ou `.venv/` selon le backend, installe les dépendances et place les poids MobileSAM dans `weights/`. Le modèle OpenCLIP du pilote est chargé via Hugging Face dans `cache/huggingface/` par défaut. La vérification exécute un calcul PyTorch, un masque MobileSAM et deux encodages OpenCLIP sur le backend choisi. `--check-only` utilise les modèles déjà installés et le cache Hugging Face hors ligne.
 
-[Commandes PyTorch](https://pytorch.org/get-started/previous-versions/) · [Chargement MobileSAM](https://github.com/ChaoningZhang/MobileSAM) · [Chargement OpenCLIP](https://github.com/mlfoundations/open_clip)
+Les options `--venv`, `--weights-dir`, `--hf-home` et `--tmp-dir` permettent de choisir d'autres emplacements. Les chemins du projet peuvent aussi être des liens vers un SSD externe déjà monté. Pour réutiliser ce cache dans une session d'inférence, donner à `HF_HOME` le même chemin avant de lancer Python.
+
+[Versions PyTorch](https://pytorch.org/get-started/previous-versions/) · [MobileSAM](https://github.com/ChaoningZhang/MobileSAM) · [OpenCLIP](https://github.com/mlfoundations/open_clip)
 
 ## Choisir et préparer une scène réelle
 
@@ -41,6 +37,31 @@ Au premier chargement, OpenCLIP récupère le checkpoint `laion2b_s34b_b79k` pou
 - **Replica**, si l'équipe possède déjà des séquences rendues RGB-D avec leurs poses et le maillage sémantique correspondant, vérifier sur une scène que les poses et les annotations partagent le même repère. [Structure des scènes Replica](https://github.com/facebookresearch/Replica-Dataset)
 
 Un adaptateur doit écrire un manifeste conforme au format ci-dessous. Contrôler d'abord les contours couleur/profondeur dans chaque trame, puis deux vues éloignées de la même surface dans un visualiseur PLY.
+
+Pour télécharger un seul scan brut ARKitScenes depuis la racine du dépôt, avec `curl` installé et le SSD monté si `data/` y pointe, lancer la commande suivante. Sans arguments, elle prend le scan `47333462` du split `Training`, donné en exemple par Apple.
+
+```bash
+python3 -m openmap.download_arkitscenes
+```
+
+Les cinq ressources sont enregistrées dans `data/arkitscenes/raw/Training/47333462/`. Pour choisir un autre scan, passer `--video-id` et `--split` avec les valeurs du CSV officiel. Le téléchargement prépare les fichiers bruts. L'adaptateur doit ensuite les synchroniser, vérifier leur recalage et créer le manifeste.
+
+Pour préparer le scan d'exemple et inspecter les dix trames sélectionnées sur la durée du scan :
+
+```bash
+python -m openmap.prepare_arkitscenes data/arkitscenes/raw/Training/47333462
+python -m openmap inspect runs/47333462/manifest.json --frames 10 --pixel-stride 2 --ply runs/47333462/cloud.ply
+```
+
+L'adaptateur associe RGB, profondeur et intrinsèques au même timestamp, puis retient la pose la plus proche dans une tolérance de 2 ms par défaut. Il conserve le repère monde d'Apple. Le contrôle visuel des contours RGB-D et des boîtes annotées reste nécessaire avant le benchmark.
+
+Avec Matplotlib installé via `requirements-analysis.txt`, générer les aperçus et le comptage de points par boîte avec :
+
+```bash
+python -m openmap.check_arkitscenes runs/47333462/manifest.json data/arkitscenes/raw/Training/47333462/47333462_3dod_annotation.json --frames 6 7
+```
+
+Ouvrir `controle-rgbd.png`, `controle-multivue.png` et `controle-annotations.png` dans `runs/47333462/`. Les numéros des boîtes correspondent aux entrées de `controle.json`, qui consigne aussi les trames, le seuil et le sous-échantillonnage utilisés. Le comptage aide à examiner la couverture des objets.
 
 ```powershell
 .\.venv\Scripts\python.exe -m openmap inspect data/ma_scene/manifest.json --frames 10 --pixel-stride 2 --voxel-size 0.05 --ply runs/ma_scene/cloud.ply
